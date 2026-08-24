@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: quicksearch
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /
+    envVars:
+      - key: AISEARCH_KEY
+        sync: false   # set this in the Render dashboard (generate with: python client.py keygen)
+      - key: OPENAI_API_KEY
+        sync: false   # set this in the Render dashboard
+      - key: OPENAI_MODEL
+        value: gpt-4o-mini
+      - key: SITE_PASSWORD
+        sync: false   # optional: set a password to protect the frontend from public access

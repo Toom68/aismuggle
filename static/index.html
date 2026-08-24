@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QuickSearch</title>
+<style>
+  :root { --blue:#4285f4; --blue-d:#3367d6; --gray:#5f6368; --light:#f8f9fa; --border:#dfe1e5; --red:#ea4335; --green:#34a853; }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:system-ui,-apple-system,sans-serif;color:#202124;background:#fff;min-height:100vh}
+  a{color:#1a0dab;text-decoration:none}
+  a:hover{text-decoration:underline}
+
+  /* ---- Landing (search homepage) ---- */
+  #landing{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;gap:28px}
+  #landing .logo{font-size:64px;font-weight:500;letter-spacing:-2px}
+  #landing .logo span:nth-child(1){color:#4285f4}
+  #landing .logo span:nth-child(2){color:#ea4335}
+  #landing .logo span:nth-child(3){color:#fbbc05}
+  #landing .logo span:nth-child(4){color:#4285f4}
+  #landing .logo span:nth-child(5){color:#34a853}
+  #landing .logo span:nth-child(6){color:#ea4335}
+  #landing .logo span:nth-child(7){color:#fbbc05}
+  #landing .logo span:nth-child(8){color:#4285f4}
+  #landing .logo span:nth-child(9){color:#34a853}
+  #landing .logo span:nth-child(10){color:#ea4335}
+  .search-bar{display:flex;align-items:center;gap:8px;width:100%;max-width:560px}
+  .search-bar input{
+    flex:1;padding:14px 20px;border:1px solid var(--border);border-radius:24px;
+    font-size:16px;outline:none;transition:border-color .2s,box-shadow .2s
+  }
+  .search-bar input:focus{border-color:var(--blue);box-shadow:0 1px 6px rgba(66,133,244,.3)}
+  .search-bar button{
+    padding:12px 22px;border:none;background:var(--blue);color:#fff;
+    border-radius:24px;cursor:pointer;font-size:15px;font-weight:500;transition:background .2s
+  }
+  .search-bar button:hover{background:var(--blue-d)}
+  .search-bar button:disabled{background:#bbb;cursor:default}
+  #landing .foot{color:#9aa0a6;font-size:13px}
+
+  /* ---- Results page ---- */
+  #results-page{display:none;max-width:640px;margin:0 auto;padding:20px}
+  #results-page .topbar{display:flex;align-items:center;gap:12px;margin-bottom:24px;position:sticky;top:0;background:#fff;padding:12px 0;z-index:10}
+  #results-page .topbar .logo-sm{font-size:22px;font-weight:500;letter-spacing:-1px;cursor:pointer;white-space:nowrap}
+  #results-page .topbar .logo-sm span:nth-child(1){color:#4285f4}
+  #results-page .topbar .logo-sm span:nth-child(2){color:#ea4335}
+  #results-page .topbar .logo-sm span:nth-child(3){color:#fbbc05}
+  #results-page .topbar .logo-sm span:nth-child(4){color:#4285f4}
+  #results-page .topbar .logo-sm span:nth-child(5){color:#34a853}
+  #results-page .topbar .logo-sm span:nth-child(6){color:#ea4335}
+  #results-page .topbar .logo-sm span:nth-child(7){color:#fbbc05}
+  #results-page .topbar .logo-sm span:nth-child(8){color:#4285f4}
+  #results-page .topbar .logo-sm span:nth-child(9){color:#34a853}
+  #results-page .topbar .logo-sm span:nth-child(10){color:#ea4335}
+  #results-page .topbar input{
+    flex:1;padding:10px 16px;border:1px solid var(--border);border-radius:20px;
+    font-size:15px;outline:none
+  }
+  #results-page .topbar input:focus{border-color:var(--blue);box-shadow:0 1px 6px rgba(66,133,244,.2)}
+  #results-page .topbar button{
+    padding:8px 16px;border:1px solid var(--border);background:var(--light);color:var(--gray);
+    border-radius:20px;cursor:pointer;font-size:14px
+  }
+  #results-page .topbar button:hover{background:#e8eaed}
+
+  .result-count{color:var(--gray);font-size:13px;margin-bottom:16px;padding-bottom:8px;border-bottom:1px solid var(--border)}
+
+  /* featured snippet = the AI answer */
+  .featured-snippet{
+    background:var(--light);border:1px solid var(--border);border-radius:8px;
+    padding:16px 20px;margin-bottom:24px
+  }
+  .featured-snippet .fs-label{font-size:12px;color:var(--gray);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px}
+  .featured-snippet .fs-title{font-size:18px;color:#202124;margin-bottom:6px;line-height:1.4}
+  .featured-snippet .fs-title a{color:#1a0dab}
+  .featured-snippet .fs-body{font-size:15px;line-height:1.6;color:#3c4043;white-space:pre-wrap;word-wrap:break-word}
+  .featured-snippet .cursor{display:inline-block;width:2px;height:1em;background:var(--blue);animation:blink 1s steps(2) infinite;vertical-align:text-bottom;margin-left:1px}
+  @keyframes blink{50%{opacity:0}}
+
+  /* decoy results */
+  .result-item{margin-bottom:22px}
+  .result-item .r-url{font-size:13px;color:var(--gray);margin-bottom:2px}
+  .result-item .r-title{font-size:18px;line-height:1.3;margin-bottom:4px}
+  .result-item .r-title a{color:#1a0dab}
+  .result-item .r-snippet{font-size:14px;color:var(--gray);line-height:1.5}
+
+  .error-box{background:#fce8e6;border:1px solid #ea4335;color:#c5221f;padding:14px 18px;border-radius:8px;font-size:14px;margin-bottom:20px}
+
+  .spinner{display:inline-block;width:18px;height:18px;border:2px solid var(--border);border-top-color:var(--blue);border-radius:50%;animation:spin .8s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+
+<!-- Landing / homepage -->
+<div id="landing">
+  <div class="logo"><span>Q</span><span>u</span><span>i</span><span>c</span><span>k</span><span>S</span><span>e</span><span>a</span><span>r</span><span>c</span><span>h</span></div>
+  <form class="search-bar" id="landing-form">
+    <input type="text" id="landing-input" placeholder="Search the web" autocomplete="off" autofocus>
+    <button type="submit">Search</button>
+  </form>
+  <div class="foot">QuickSearch &middot; privacy-first web search</div>
+</div>
+
+<!-- Results page -->
+<div id="results-page">
+  <div class="topbar">
+    <div class="logo-sm" id="back-home"><span>Q</span><span>u</span><span>i</span><span>c</span><span>k</span><span>S</span><span>e</span><span>a</span><span>r</span><span>c</span><span>h</span></div>
+    <form id="results-form" style="flex:1;display:flex;gap:8px">
+      <input type="text" id="results-input" autocomplete="off">
+      <button type="submit">Search</button>
+    </form>
+  </div>
+  <div id="results-container"></div>
+</div>
+
+<script>
+const landing = document.getElementById('landing');
+const landingForm = document.getElementById('landing-form');
+const landingInput = document.getElementById('landing-input');
+const resultsPage = document.getElementById('results-page');
+const resultsForm = document.getElementById('results-form');
+const resultsInput = document.getElementById('results-input');
+const resultsContainer = document.getElementById('results-container');
+const backHome = document.getElementById('back-home');
+
+const DECOY_RESULTS = [
+  { url:"encyclopedia.example.com › wiki › topic", title:"Topic - Encyclopedia", snippet:"Comprehensive overview covering definitions, history, and applications. Includes references and further reading." },
+  { url:"answers.example.org › questions", title:"Related Questions and Answers", snippet:"Community-driven answers to common questions. Verified by experts and updated regularly." },
+  { url:"wiki.example.net › article", title:"Detailed Article - Wiki", snippet:"In-depth explanation with examples, diagrams, and citations from peer-reviewed sources." },
+  { url:"forum.example.com › discussion", title:"Discussion Forum - Recent Threads", snippet:"Join the conversation. Share insights, ask questions, and connect with others." },
+  { url:"news.example.com › latest", title:"Latest News and Updates", snippet:"Stay informed with the most recent developments and breaking stories." },
+  { url:"docs.example.io › guide", title:"Documentation - Getting Started", snippet:"Step-by-step guides, tutorials, and API reference for developers." },
+];
+
+let abortController = null;
+let sitePassword = sessionStorage.getItem('qs_password') || '';
+
+function showLanding() {
+  resultsPage.style.display = 'none';
+  landing.style.display = 'flex';
+  landingInput.focus();
+  if (abortController) abortController.abort();
+}
+
+function showResultsPage(query) {
+  landing.style.display = 'none';
+  resultsPage.style.display = 'block';
+  resultsInput.value = query;
+  resultsInput.focus();
+}
+
+backHome.addEventListener('click', showLanding);
+
+async function search(query) {
+  if (!query.trim()) return;
+  if (abortController) abortController.abort();
+  abortController = new AbortController();
+
+  showResultsPage(query);
+  resultsContainer.innerHTML = '';
+
+  // Result count line
+  const count = document.createElement('div');
+  count.className = 'result-count';
+  count.textContent = `About ${(Math.floor(Math.random()*8000000)+200000).toLocaleString()} results (0.${Math.floor(Math.random()*9)} seconds)`;
+  resultsContainer.appendChild(count);
+
+  // Featured snippet (the AI answer)
+  const snippet = document.createElement('div');
+  snippet.className = 'featured-snippet';
+  const fsLabel = document.createElement('div');
+  fsLabel.className = 'fs-label';
+  fsLabel.textContent = 'Featured snippet';
+  const fsTitle = document.createElement('div');
+  fsTitle.className = 'fs-title';
+  fsTitle.innerHTML = '<a href="#">Quick answer - QuickSearch</a>';
+  const fsBody = document.createElement('div');
+  fsBody.className = 'fs-body';
+  const cursor = document.createElement('span');
+  cursor.className = 'cursor';
+  fsBody.appendChild(cursor);
+  snippet.appendChild(fsLabel);
+  snippet.appendChild(fsTitle);
+  snippet.appendChild(fsBody);
+  resultsContainer.appendChild(snippet);
+
+  // Decoy results (appear immediately, look natural)
+  const decoyWrap = document.createElement('div');
+  const shownDecoys = [...DECOY_RESULTS].sort(() => Math.random() - 0.5).slice(0, 4);
+  for (const d of shownDecoys) {
+    const item = document.createElement('div');
+    item.className = 'result-item';
+    item.innerHTML = `<div class="r-url">${d.url}</div><div class="r-title"><a href="#">${d.title}</a></div><div class="r-snippet">${d.snippet}</div>`;
+    decoyWrap.appendChild(item);
+  }
+  resultsContainer.appendChild(decoyWrap);
+
+  // Stream the response
+  try {
+    let resp = await doSearch(query);
+    if (resp.unauthorized) {
+      // Prompt for password and retry
+      sitePassword = prompt('This site requires a password:') || '';
+      if (!sitePassword) { showError('Password required'); return; }
+      sessionStorage.setItem('qs_password', sitePassword);
+      resp = await doSearch(query);
+      if (resp.unauthorized) { showError('Incorrect password'); return; }
+    }
+    if (!resp.ok) {
+      showError(await resp.text() || `HTTP ${resp.status}`);
+      return;
+    }
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let answerText = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream:true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        let frame;
+        try { frame = JSON.parse(line); } catch { continue; }
+        if (frame.error) {
+          for (const r of (frame.results||[])) {
+            if (r.snippet) { showError(r.snippet); return; }
+          }
+          if (frame.error && typeof frame.error === 'string') { showError(frame.error); return; }
+          return;
+        }
+        for (const r of (frame.results||[])) {
+          if (r.snippet) {
+            answerText += r.snippet;
+            fsBody.textContent = answerText;
+            fsBody.appendChild(cursor);
+          }
+        }
+        if (frame.done) {
+          cursor.remove();
+          break;
+        }
+      }
+    }
+    if (cursor.parentNode) cursor.remove();
+  } catch (err) {
+    if (err.name !== 'AbortError') {
+      showError('Network error: ' + err.message);
+    }
+  }
+}
+
+async function doSearch(query) {
+  const formData = new FormData();
+  formData.append('q', query);
+  const headers = {};
+  if (sitePassword) headers['X-Site-Password'] = sitePassword;
+  const resp = await fetch('/search', { method:'POST', body:formData, headers, signal:abortController.signal });
+  // Check if unauthorized by peeking at the first chunk
+  if (resp.ok) {
+    const cloned = resp.clone();
+    const reader = cloned.body.getReader();
+    const { value } = await reader.read();
+    reader.cancel();
+    const text = new TextDecoder().decode(value || new Uint8Array());
+    if (text.includes('"error"') && text.includes('unauthorized')) {
+      return { unauthorized: true };
+    }
+  }
+  return resp;
+}
+
+function showError(msg) {
+  const cursor = document.querySelector('.cursor');
+  if (cursor) cursor.remove();
+  const box = document.createElement('div');
+  box.className = 'error-box';
+  box.textContent = msg;
+  resultsContainer.prepend(box);
+}
+
+landingForm.addEventListener('submit', (e) => { e.preventDefault(); search(landingInput.value); });
+resultsForm.addEventListener('submit', (e) => { e.preventDefault(); search(resultsInput.value); });
+
+// Allow Enter in the results input to search
+resultsInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); search(resultsInput.value); }
+});
+
+// Escape goes back to landing
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') showLanding();
+});
+</script>
+</body>
+</html>
