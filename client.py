@@ -50,6 +50,7 @@ def stream_completion(
     key: bytes,
     *,
     raw: bool = False,
+    site_password: str | None = None,
 ):
     """Send messages to the disguised server and yield decoded tokens.
 
@@ -59,10 +60,13 @@ def stream_completion(
     """
     blob = encrypt(key, json.dumps({"messages": messages, "model": model}).encode("utf-8"))
     url = base_url.rstrip("/") + "/search"
+    form_data = {"q": blob}
+    if site_password:
+        form_data["p"] = site_password
 
     try:
         with httpx.Client(timeout=httpx.Timeout(120.0, connect=10.0)) as client:
-            with client.stream("POST", url, data={"q": blob}) as resp:
+            with client.stream("POST", url, data=form_data) as resp:
                 if resp.status_code != 200:
                     body = resp.read().decode("utf-8", "replace")
                     yield ("error", f"HTTP {resp.status_code}: {body}")

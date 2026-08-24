@@ -102,6 +102,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     model = args.model or os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
     system_prompt: str | None = args.system
+    site_password = os.environ.get("SITE_PASSWORD", "")
     messages: list[dict] = []
     raw_mode = False
 
@@ -194,7 +195,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         started = False
         error_occurred = False
 
-        for kind, value in stream_completion(messages, model, base_url, key, raw=raw_mode):
+        for kind, value in stream_completion(messages, model, base_url, key, raw=raw_mode, site_password=site_password):
             if kind == "token":
                 if not started:
                     started = True
