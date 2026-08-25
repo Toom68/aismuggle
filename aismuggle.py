@@ -29,9 +29,11 @@ from __future__ import annotations
 
 import argparse
 import os
+import random
 import sys
+import time
 
-from client import stream_completion
+from client import stream_completion, _jitter
 from crypto import generate_key, load_key
 
 # ANSI colors (disabled if not a TTY or NO_COLOR is set).
@@ -189,6 +191,9 @@ def cmd_run(args: argparse.Namespace) -> int:
 
         # --- Send a message ---
         messages.append({"role": "user", "content": text})
+
+        # Human-like jitter before sending (defeats pattern-based DPI).
+        _jitter()
 
         # Stream the response.
         full_response = ""

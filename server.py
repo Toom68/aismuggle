@@ -86,11 +86,6 @@ async def index() -> str:
     return _read_index()
 
 
-@app.get("/search", response_class=HTMLResponse)
-async def search_get() -> str:
-    return _read_index()
-
-
 def _check_password(request: Request, form_p: str | None) -> str | None:
     """Return an error message if the password check fails, else None."""
     if not _SITE_PASSWORD:
@@ -101,9 +96,27 @@ def _check_password(request: Request, form_p: str | None) -> str | None:
     return "unauthorized"
 
 
+@app.get("/search")
+async def search_get(request: Request, q: str | None = None, p: str | None = None):
+    """GET /search — handles both the homepage and the streaming API.
+
+    - No `q` param: return the HTML homepage (like visiting a search engine).
+    - With `q` param: stream disguised search results (the CLI client uses this
+      with GET, matching how real search engines work).
+    """
+    if q is None:
+        return HTMLResponse(_read_index())
+    return await _handle_search(request, q, p or "")
+
+
 @app.post("/search")
 async def search_post(request: Request, q: str = Form(...), p: str = Form(default="")):
-    """Disguised chat-completion endpoint.
+    """POST /search — used by the browser frontend (form submission)."""
+    return await _handle_search(request, q, p)
+
+
+async def _handle_search(request: Request, q: str, p: str):
+    """Core search handler shared by GET and POST.
 
     Auto-detects encrypted (CLI) vs plaintext (browser) mode by attempting
     AES-GCM decryption; if that fails, treats `q` as a plaintext prompt.
@@ -115,7 +128,7 @@ async def search_post(request: Request, q: str = Form(...), p: str = Form(defaul
     In encrypted mode, snippet = AES-GCM(base64) token.
     In plaintext mode, snippet = raw token string.
     """
-    # Password check (for browser mode).
+    # Password check.
     pw_err = _check_password(request, p if p else None)
     if pw_err:
         async def unauth():

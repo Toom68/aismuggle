@@ -1,29 +1,22 @@
 #!/usr/bin/env python3
 """aisearch client - talk to an aisearch server disguised as web searches.
 
+Uses curl_cffi to impersonate a real Chrome browser's TLS fingerprint (JA3),
+sends GET requests (like a real search engine), and includes realistic
+browser headers. This defeats DPI that blocks non-browser TLS clients.
+
 Subcommands:
-  keygen   Print a fresh urlsafe-base64 32-byte key (set as AISEARCH_KEY on
-           both the client and the server).
-  ask      Encrypt a prompt, POST it to the server's /search endpoint, and
-           stream the decrypted completion to stdout. With --raw, instead
-           print the disguised search-result frames exactly as received.
-  decode   Read disguised frames (from --raw output or a log file) on stdin
-           and print the recovered completion text.
+  keygen   Print a fresh urlsafe-base64 32-byte key.
+  ask      Encrypt a prompt, GET the server's /search endpoint, and stream
+           the decrypted completion to stdout. With --raw, print the disguised
+           search-result frames exactly as received.
+  decode   Read disguised frames from stdin and print the recovered text.
 
 Environment:
-  AISEARCH_KEY   required for ask/decode; urlsafe-base64 32-byte key
-  AISEARCH_URL   required for ask; base URL of the deployed server
-                 (e.g. https://your-service.onrender.com)
+  AISEARCH_KEY   required; urlsafe-base64 32-byte key
+  AISEARCH_URL   required; base URL of the deployed server
   OPENAI_MODEL   optional; default model override
-
-Examples:
-  export AISEARCH_KEY=$(python client.py keygen)
-  export AISEARCH_URL=https://quicksearch.onrender.com
-  ./client.py ask "Explain entropy in one paragraph"
-  ./client.py ask --system "You are terse" "What is 2+2?"
-  echo "summarize quantum tunneling" | ./client.py ask
-  ./client.py ask --raw "hello" > search.log
-  ./client.py decode < search.log
+  SITE_PASSWORD  optional; password if the server requires one
 """
 
 from __future__ import annotations
@@ -31,11 +24,45 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import random
 import sys
+import time
+from urllib.parse import quote
 
-import httpx
+from curl_cffi import requests as cffi_requests
 
 from crypto import decrypt, encrypt, generate_key, load_key
+
+# Realistic Chrome browser headers. curl_cffi handles the TLS fingerprint
+# (JA3/JA4) and HTTP/2 settings automatically when impersonate="chrome".
+_BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/131.0.0.0 Safari/537.36"
+    ),
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,"
+        "image/avif,image/webp,image/apng,*/*;q=0.8"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br, zstd",
+    "Cache-Control": "max-age=0",
+    "Sec-Ch-Ua": '"Chromium";v="131", "Not_A Brand";v="24", "Google Chrome";v="131"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"macOS"',
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "same-origin",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
+    "Connection": "keep-alive",
+}
+
+
+def _jitter(min_s: float = 0.3, max_s: float = 1.2) -> None:
+    """Sleep a random amount to mimic human browsing patterns."""
+    time.sleep(random.uniform(min_s, max_s))
 
 
 def cmd_keygen(_: argparse.Namespace) -> int:
@@ -54,46 +81,72 @@ def stream_completion(
 ):
     """Send messages to the disguised server and yield decoded tokens.
 
-    Yields ("token", str) for each content chunk, ("raw", str) for each raw
-    frame line (when raw=True), ("error", str) on error, or ("done", None)
-    when the stream finishes.
+    Uses GET /search?q=<encrypted> with a Chrome TLS fingerprint and
+    realistic browser headers. Yields ("token", str), ("raw", str),
+    ("error", str), or ("done", None).
     """
     blob = encrypt(key, json.dumps({"messages": messages, "model": model}).encode("utf-8"))
-    url = base_url.rstrip("/") + "/search"
-    form_data = {"q": blob}
+
+    # Build a GET URL like a real search engine: /search?q=<blob>&p=<password>
+    params = {"q": blob}
     if site_password:
-        form_data["p"] = site_password
+        params["p"] = site_password
+    url = base_url.rstrip("/") + "/search"
+
+    headers = dict(_BROWSER_HEADERS)
+    headers["Referer"] = base_url.rstrip("/") + "/"
 
     try:
-        with httpx.Client(timeout=httpx.Timeout(120.0, connect=10.0)) as client:
-            with client.stream("POST", url, data=form_data) as resp:
-                if resp.status_code != 200:
-                    body = resp.read().decode("utf-8", "replace")
-                    yield ("error", f"HTTP {resp.status_code}: {body}")
-                    return
-                for line in resp.iter_lines():
-                    if not line:
-                        continue
-                    if raw:
-                        yield ("raw", line)
-                    try:
-                        frame = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if frame.get("error"):
-                        for r in frame.get("results", []):
-                            snip = r.get("snippet")
-                            if snip:
-                                yield ("error", decrypt(key, snip).decode("utf-8", "replace"))
-                        return
+        # curl_cffi impersonates Chrome's TLS fingerprint (JA3/JA4),
+        # HTTP/2 settings, and header order — defeating DPI that blocks
+        # non-browser clients.
+        resp = cffi_requests.get(
+            url,
+            params=params,
+            headers=headers,
+            impersonate="chrome",
+            timeout=120,
+            stream=True,
+        )
+        if resp.status_code != 200:
+            yield ("error", f"HTTP {resp.status_code}: {resp.text[:500]}")
+            return
+
+        buffer = ""
+        for chunk in resp.iter_content(chunk_size=4096):
+            if not chunk:
+                continue
+            if isinstance(chunk, bytes):
+                buffer += chunk.decode("utf-8", "replace")
+            else:
+                buffer += chunk
+
+            while "\n" in buffer:
+                line, buffer = buffer.split("\n", 1)
+                line = line.strip()
+                if not line:
+                    continue
+                if raw:
+                    yield ("raw", line)
+                try:
+                    frame = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if frame.get("error"):
                     for r in frame.get("results", []):
                         snip = r.get("snippet")
                         if snip:
-                            yield ("token", decrypt(key, snip).decode("utf-8", "replace"))
-                    if frame.get("done"):
-                        yield ("done", None)
-                        return
-    except httpx.HTTPError as e:
+                            yield ("error", decrypt(key, snip).decode("utf-8", "replace"))
+                    return
+                for r in frame.get("results", []):
+                    snip = r.get("snippet")
+                    if snip:
+                        yield ("token", decrypt(key, snip).decode("utf-8", "replace"))
+                if frame.get("done"):
+                    yield ("done", None)
+                    return
+
+    except Exception as e:
         yield ("error", f"network: {e}")
 
 
@@ -117,10 +170,13 @@ def cmd_ask(args: argparse.Namespace) -> int:
         messages.append({"role": "system", "content": args.system})
     messages.append({"role": "user", "content": user_text})
     model = args.model or os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+    site_password = os.environ.get("SITE_PASSWORD", "")
 
     out = sys.stdout
     saw_any = False
-    for kind, value in stream_completion(messages, model, base_url, key, raw=args.raw):
+    for kind, value in stream_completion(
+        messages, model, base_url, key, raw=args.raw, site_password=site_password
+    ):
         saw_any = True
         if kind == "raw":
             out.write(value + "\n")
