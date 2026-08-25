@@ -94,10 +94,15 @@ def stream_completion(
     blob = encrypt(key, json.dumps({"messages": messages, "model": model}).encode("utf-8"))
 
     # Build a GET URL like a real search engine: /search?q=<blob>&p=<password>
+    # For Google Apps Script, the path is /exec (already in the URL).
     params = {"q": blob}
     if site_password:
         params["p"] = site_password
-    url = base_url.rstrip("/") + "/search"
+    is_google = "script.google.com" in base_url
+    if is_google:
+        url = base_url.rstrip("/")  # URL already ends with /exec
+    else:
+        url = base_url.rstrip("/") + "/search"
 
     headers = dict(_BROWSER_HEADERS)
     headers["Referer"] = base_url.rstrip("/") + "/"
@@ -117,7 +122,6 @@ def stream_completion(
         # Timeout: 15s connect, 120s total (Google Apps Script can take a while).
         # Google Apps Script returns a 302 redirect to googleusercontent.com —
         # curl_cffi follows redirects by default, so this is handled.
-        is_google = "script.google.com" in base_url
         timeout = 120 if is_google else 15
         resp = cffi_requests.get(
             url,
