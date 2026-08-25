@@ -1,0 +1,5 @@
+{
+  "rewrites": [
+    { "source": "/(.*)", "destination": "https://quicksearch-bw7h.onrender.com/$1" }
+  ]
+}
