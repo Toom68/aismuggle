@@ -79,12 +79,18 @@ def stream_completion(
     raw: bool = False,
     site_password: str | None = None,
     verbose: bool = False,
+    fallback_url: str | None = None,
 ):
     """Send messages to the disguised server and yield decoded tokens.
 
     Uses GET /search?q=<encrypted> with a Chrome TLS fingerprint and
     realistic browser headers. Yields ("token", str), ("raw", str),
     ("error", str), or ("done", None).
+
+    If fallback_url is set and the primary URL fails (timeout, blocked,
+    connection error), the request is retried through the fallback URL.
+    This enables streaming via Vercel at home, with automatic fallback
+    to Google Apps Script (non-streaming) on blocked networks.
     """
     def vlog(msg: str) -> None:
         if verbose:
@@ -93,118 +99,141 @@ def stream_completion(
 
     blob = encrypt(key, json.dumps({"messages": messages, "model": model}).encode("utf-8"))
 
-    # Build a GET URL like a real search engine: /search?q=<blob>&p=<password>
-    # For Google Apps Script, the path is /exec (already in the URL).
-    params = {"q": blob}
-    if site_password:
-        params["p"] = site_password
-    is_google = "script.google.com" in base_url
-    if is_google:
-        url = base_url.rstrip("/")  # URL already ends with /exec
-    else:
-        url = base_url.rstrip("/") + "/search"
+    # Try the primary URL first. If it fails and we have a fallback, retry.
+    urls_to_try = [base_url]
+    if fallback_url and fallback_url != base_url:
+        urls_to_try.append(fallback_url)
 
-    headers = dict(_BROWSER_HEADERS)
-    headers["Referer"] = base_url.rstrip("/") + "/"
+    last_error = None
+    for try_idx, try_url in enumerate(urls_to_try):
+        if try_idx > 0:
+            vlog(f"primary URL failed, falling back to: {try_url}")
+            sys.stderr.write(f"\033[2m  [fallback] trying {try_url}...\033[0m\n")
+            sys.stderr.flush()
 
-    vlog(f"URL: {url}")
-    vlog(f"params: q={blob[:40]}... ({len(blob)} chars), p={'***' if site_password else 'none'}")
-    vlog(f"impersonate: chrome")
-    vlog(f"headers: {len(headers)} headers set")
-    vlog(f"attempting GET request...")
-    if is_google:
-        vlog(f"google apps script mode: non-streaming, 120s timeout, follows redirects")
+        is_google = "script.google.com" in try_url
 
-    try:
-        # curl_cffi impersonates Chrome's TLS fingerprint (JA3/JA4),
-        # HTTP/2 settings, and header order — defeating DPI that blocks
-        # non-browser clients.
-        # Timeout: 15s connect, 120s total (Google Apps Script can take a while).
-        # Google Apps Script returns a 302 redirect to googleusercontent.com —
-        # curl_cffi follows redirects by default, so this is handled.
-        timeout = 120 if is_google else 15
-        resp = cffi_requests.get(
-            url,
-            params=params,
-            headers=headers,
-            impersonate="chrome",
-            timeout=timeout,
-            stream=True,
-            allow_redirects=True,
-        )
-        vlog(f"response: HTTP {resp.status_code}")
-        vlog(f"response headers: {dict(resp.headers)}")
-        if resp.status_code != 200:
-            body_text = resp.text[:500] if hasattr(resp, 'text') else '(streamed)'
-            vlog(f"error body: {body_text}")
-            yield ("error", f"HTTP {resp.status_code}: {body_text}")
-            return
+        # Build a GET URL like a real search engine: /search?q=<blob>&p=<password>
+        # For Google Apps Script, the path is /exec (already in the URL).
+        params = {"q": blob}
+        if site_password:
+            params["p"] = site_password
+        if is_google:
+            url = try_url.rstrip("/")  # URL already ends with /exec
+        else:
+            url = try_url.rstrip("/") + "/search"
 
-        vlog(f"streaming response body...")
-        buffer = ""
-        bytes_received = 0
-        for chunk in resp.iter_content(chunk_size=4096):
-            if not chunk:
-                continue
-            bytes_received += len(chunk)
-            if isinstance(chunk, bytes):
-                buffer += chunk.decode("utf-8", "replace")
-            else:
-                buffer += chunk
+        headers = dict(_BROWSER_HEADERS)
+        headers["Referer"] = try_url.rstrip("/") + "/"
 
-            while "\n" in buffer:
-                line, buffer = buffer.split("\n", 1)
-                line = line.strip()
-                if not line:
+        vlog(f"URL: {url}")
+        vlog(f"params: q={blob[:40]}... ({len(blob)} chars), p={'***' if site_password else 'none'}")
+        vlog(f"impersonate: chrome")
+        vlog(f"headers: {len(headers)} headers set")
+        vlog(f"attempting GET request...")
+        if is_google:
+            vlog(f"google apps script mode: non-streaming, 120s timeout, follows redirects")
+
+        try:
+            # curl_cffi impersonates Chrome's TLS fingerprint (JA3/JA4),
+            # HTTP/2 settings, and header order — defeating DPI that blocks
+            # non-browser clients.
+            # Timeout: 15s connect for primary, 120s for GAS fallback.
+            # Google Apps Script returns a 302 redirect to googleusercontent.com —
+            # curl_cffi follows redirects by default, so this is handled.
+            timeout = 120 if is_google else 15
+            resp = cffi_requests.get(
+                url,
+                params=params,
+                headers=headers,
+                impersonate="chrome",
+                timeout=timeout,
+                stream=True,
+                allow_redirects=True,
+            )
+            vlog(f"response: HTTP {resp.status_code}")
+            vlog(f"response headers: {dict(resp.headers)}")
+            if resp.status_code != 200:
+                body_text = resp.text[:500] if hasattr(resp, 'text') else '(streamed)'
+                vlog(f"error body: {body_text}")
+                last_error = f"HTTP {resp.status_code}: {body_text}"
+                if try_idx < len(urls_to_try) - 1:
+                    continue  # try fallback
+                yield ("error", last_error)
+                return
+
+            vlog(f"streaming response body...")
+            buffer = ""
+            bytes_received = 0
+            for chunk in resp.iter_content(chunk_size=4096):
+                if not chunk:
                     continue
-                if raw:
-                    yield ("raw", line)
-                try:
-                    frame = json.loads(line)
-                except json.JSONDecodeError:
-                    vlog(f"unparseable line: {line[:80]}")
-                    continue
-                if frame.get("error"):
-                    vlog(f"server error frame: {frame}")
+                bytes_received += len(chunk)
+                if isinstance(chunk, bytes):
+                    buffer += chunk.decode("utf-8", "replace")
+                else:
+                    buffer += chunk
+
+                while "\n" in buffer:
+                    line, buffer = buffer.split("\n", 1)
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if raw:
+                        yield ("raw", line)
+                    try:
+                        frame = json.loads(line)
+                    except json.JSONDecodeError:
+                        vlog(f"unparseable line: {line[:80]}")
+                        continue
+                    if frame.get("error"):
+                        vlog(f"server error frame: {frame}")
+                        for r in frame.get("results", []):
+                            snip = r.get("snippet")
+                            if snip:
+                                yield ("error", decrypt(key, snip).decode("utf-8", "replace"))
+                        return
                     for r in frame.get("results", []):
                         snip = r.get("snippet")
                         if snip:
-                            yield ("error", decrypt(key, snip).decode("utf-8", "replace"))
-                    return
-                for r in frame.get("results", []):
-                    snip = r.get("snippet")
-                    if snip:
-                        yield ("token", decrypt(key, snip).decode("utf-8", "replace"))
-                if frame.get("done"):
-                    vlog(f"stream complete ({bytes_received} bytes received)")
-                    yield ("done", None)
-                    return
+                            yield ("token", decrypt(key, snip).decode("utf-8", "replace"))
+                    if frame.get("done"):
+                        vlog(f"stream complete ({bytes_received} bytes received)")
+                        yield ("done", None)
+                        return
 
-        vlog(f"stream ended without done frame ({bytes_received} bytes received)")
-        vlog(f"remaining buffer: {buffer[:200]}")
+            vlog(f"stream ended without done frame ({bytes_received} bytes received)")
+            vlog(f"remaining buffer: {buffer[:200]}")
+            return  # success (or at least we got data)
 
-    except Exception as e:
-        import traceback
-        ename = type(e).__name__
-        vlog(f"exception type: {ename}")
-        vlog(f"exception message: {e}")
-        vlog(f"full traceback:\n{traceback.format_exc()}")
+        except Exception as e:
+            import traceback
+            ename = type(e).__name__
+            vlog(f"exception type: {ename}")
+            vlog(f"exception message: {e}")
+            vlog(f"full traceback:\n{traceback.format_exc()}")
+            last_error = f"{ename}: {e}"
 
-        # Give a helpful message for common DPI/blocking errors.
-        msg = str(e).lower()
-        if "timeout" in msg or "timed out" in msg:
-            yield ("error",
-                f"connection timed out — your network is likely blocking this domain.\n"
-                f"  Try: set AISEARCH_URL to a Cloudflare Worker proxy URL instead of onrender.com.\n"
-                f"  See worker/worker.js for the Cloudflare Worker proxy code.\n"
-                f"  Original error: {ename}: {e}")
-        elif "refused" in msg or "reset" in msg:
-            yield ("error",
-                f"connection refused/reset — your network is actively blocking the connection.\n"
-                f"  Try: set AISEARCH_URL to a Cloudflare Worker proxy URL.\n"
-                f"  Original error: {ename}: {e}")
-        else:
-            yield ("error", f"network: {ename}: {e}")
+            # If we have a fallback URL, try it instead of erroring.
+            if try_idx < len(urls_to_try) - 1:
+                vlog(f"will try fallback URL")
+                continue
+
+            # No fallback — give a helpful message for common DPI/blocking errors.
+            msg = str(e).lower()
+            if "timeout" in msg or "timed out" in msg:
+                yield ("error",
+                    f"connection timed out — your network is likely blocking this domain.\n"
+                    f"  Try: set AISEARCH_URL to a Google Apps Script URL.\n"
+                    f"  See google-proxy/Code.gs for the GAS proxy code.\n"
+                    f"  Original error: {ename}: {e}")
+            elif "refused" in msg or "reset" in msg:
+                yield ("error",
+                    f"connection refused/reset — your network is actively blocking the connection.\n"
+                    f"  Try: set AISEARCH_URL to a Google Apps Script URL.\n"
+                    f"  Original error: {ename}: {e}")
+            else:
+                yield ("error", f"network: {ename}: {e}")
 
 
 def cmd_ask(args: argparse.Namespace) -> int:

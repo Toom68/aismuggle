@@ -105,6 +105,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(red("error: AISEARCH_URL is not set (or pass --url)"), file=sys.stderr)
         return 2
 
+    # Fallback URL: if the primary URL fails (blocked network), try this one.
+    # Typically: primary = Vercel (streaming), fallback = Google Apps Script (non-streaming).
+    fallback_url = os.environ.get("AISEARCH_FALLBACK_URL") or getattr(args, "fallback_url", None)
+
     model = args.model or os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
     system_prompt: str | None = args.system
     site_password = os.environ.get("SITE_PASSWORD", "")
@@ -123,6 +127,8 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     print(blue(BANNER))
     print(dim(f"  Server: {base_url}"))
+    if fallback_url:
+        print(dim(f"  Fallback: {fallback_url}"))
     print(dim(f"  Model:  {model}"))
     if system_prompt:
         print(dim(f"  System: {system_prompt}"))
@@ -267,7 +273,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         started = False
         error_occurred = False
 
-        for kind, value in stream_completion(messages, model, base_url, key, raw=raw_mode, site_password=site_password, verbose=verbose):
+        for kind, value in stream_completion(messages, model, base_url, key, raw=raw_mode, site_password=site_password, verbose=verbose, fallback_url=fallback_url):
             if kind == "token":
                 if not started:
                     started = True
@@ -326,6 +332,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--system", help="Initial system prompt.")
     r.add_argument("--model", help="Model name (default: gpt-4o-mini).")
     r.add_argument("--url", help="Server base URL (defaults to $AISEARCH_URL).")
+    r.add_argument("--fallback-url", help="Fallback URL if primary is blocked (defaults to $AISEARCH_FALLBACK_URL).")
     r.add_argument("-v", "--verbose", action="store_true",
                    help="Print debug info to stderr (request details, response status, errors).")
     r.set_defaults(func=cmd_run)
