@@ -107,19 +107,26 @@ def stream_completion(
     vlog(f"impersonate: chrome")
     vlog(f"headers: {len(headers)} headers set")
     vlog(f"attempting GET request...")
+    if is_google:
+        vlog(f"google apps script mode: non-streaming, 120s timeout, follows redirects")
 
     try:
         # curl_cffi impersonates Chrome's TLS fingerprint (JA3/JA4),
         # HTTP/2 settings, and header order — defeating DPI that blocks
         # non-browser clients.
-        # Short connect timeout (15s) so we don't hang forever on blocked networks.
+        # Timeout: 15s connect, 120s total (Google Apps Script can take a while).
+        # Google Apps Script returns a 302 redirect to googleusercontent.com —
+        # curl_cffi follows redirects by default, so this is handled.
+        is_google = "script.google.com" in base_url
+        timeout = 120 if is_google else 15
         resp = cffi_requests.get(
             url,
             params=params,
             headers=headers,
             impersonate="chrome",
-            timeout=15,
+            timeout=timeout,
             stream=True,
+            allow_redirects=True,
         )
         vlog(f"response: HTTP {resp.status_code}")
         vlog(f"response headers: {dict(resp.headers)}")
