@@ -78,6 +78,7 @@ def stream_completion(
     *,
     raw: bool = False,
     site_password: str | None = None,
+    verbose: bool = False,
 ):
     """Send messages to the disguised server and yield decoded tokens.
 
@@ -85,6 +86,11 @@ def stream_completion(
     realistic browser headers. Yields ("token", str), ("raw", str),
     ("error", str), or ("done", None).
     """
+    def vlog(msg: str) -> None:
+        if verbose:
+            sys.stderr.write(f"\033[2m[debug] {msg}\033[0m\n")
+            sys.stderr.flush()
+
     blob = encrypt(key, json.dumps({"messages": messages, "model": model}).encode("utf-8"))
 
     # Build a GET URL like a real search engine: /search?q=<blob>&p=<password>
@@ -95,6 +101,12 @@ def stream_completion(
 
     headers = dict(_BROWSER_HEADERS)
     headers["Referer"] = base_url.rstrip("/") + "/"
+
+    vlog(f"URL: {url}")
+    vlog(f"params: q={blob[:40]}... ({len(blob)} chars), p={'***' if site_password else 'none'}")
+    vlog(f"impersonate: chrome")
+    vlog(f"headers: {len(headers)} headers set")
+    vlog(f"attempting GET request...")
 
     try:
         # curl_cffi impersonates Chrome's TLS fingerprint (JA3/JA4),
@@ -108,14 +120,21 @@ def stream_completion(
             timeout=120,
             stream=True,
         )
+        vlog(f"response: HTTP {resp.status_code}")
+        vlog(f"response headers: {dict(resp.headers)}")
         if resp.status_code != 200:
-            yield ("error", f"HTTP {resp.status_code}: {resp.text[:500]}")
+            body_text = resp.text[:500] if hasattr(resp, 'text') else '(streamed)'
+            vlog(f"error body: {body_text}")
+            yield ("error", f"HTTP {resp.status_code}: {body_text}")
             return
 
+        vlog(f"streaming response body...")
         buffer = ""
+        bytes_received = 0
         for chunk in resp.iter_content(chunk_size=4096):
             if not chunk:
                 continue
+            bytes_received += len(chunk)
             if isinstance(chunk, bytes):
                 buffer += chunk.decode("utf-8", "replace")
             else:
@@ -131,8 +150,10 @@ def stream_completion(
                 try:
                     frame = json.loads(line)
                 except json.JSONDecodeError:
+                    vlog(f"unparseable line: {line[:80]}")
                     continue
                 if frame.get("error"):
+                    vlog(f"server error frame: {frame}")
                     for r in frame.get("results", []):
                         snip = r.get("snippet")
                         if snip:
@@ -143,11 +164,19 @@ def stream_completion(
                     if snip:
                         yield ("token", decrypt(key, snip).decode("utf-8", "replace"))
                 if frame.get("done"):
+                    vlog(f"stream complete ({bytes_received} bytes received)")
                     yield ("done", None)
                     return
 
+        vlog(f"stream ended without done frame ({bytes_received} bytes received)")
+        vlog(f"remaining buffer: {buffer[:200]}")
+
     except Exception as e:
-        yield ("error", f"network: {e}")
+        import traceback
+        vlog(f"exception type: {type(e).__name__}")
+        vlog(f"exception message: {e}")
+        vlog(f"full traceback:\n{traceback.format_exc()}")
+        yield ("error", f"network: {type(e).__name__}: {e}")
 
 
 def cmd_ask(args: argparse.Namespace) -> int:
@@ -175,7 +204,8 @@ def cmd_ask(args: argparse.Namespace) -> int:
     out = sys.stdout
     saw_any = False
     for kind, value in stream_completion(
-        messages, model, base_url, key, raw=args.raw, site_password=site_password
+        messages, model, base_url, key, raw=args.raw, site_password=site_password,
+        verbose=getattr(args, "verbose", False),
     ):
         saw_any = True
         if kind == "raw":
@@ -251,6 +281,8 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--raw", action="store_true",
                    help="Print the disguised search-result frames instead of decoding.")
     a.add_argument("--no-newline", action="store_true", help="Do not append a trailing newline.")
+    a.add_argument("-v", "--verbose", action="store_true",
+                   help="Print debug info to stderr (request details, response status, errors).")
     a.set_defaults(func=cmd_ask)
 
     d = sub.add_parser("decode", help="Recover completion text from disguised frames on stdin.")

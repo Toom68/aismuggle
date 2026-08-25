@@ -35,6 +35,7 @@ import time
 
 from client import stream_completion, _jitter
 from crypto import generate_key, load_key
+from curl_cffi import requests as cffi_requests
 
 # ANSI colors (disabled if not a TTY or NO_COLOR is set).
 _USE_COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
@@ -88,6 +89,8 @@ Commands:
   /clear           Clear conversation history
   /history         Show current message history
   /raw             Toggle raw mode (print disguised frames)
+  /debug           Toggle debug mode (print request/response details)
+  /test            Run connectivity test (DNS, TCP, TLS, HTTP)
   /help            Show this help
   /quit            Exit (Ctrl+D / Ctrl+C also work)
 
@@ -105,6 +108,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     model = args.model or os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
     system_prompt: str | None = args.system
     site_password = os.environ.get("SITE_PASSWORD", "")
+    verbose = getattr(args, "verbose", False)
     messages: list[dict] = []
     raw_mode = False
 
@@ -185,6 +189,69 @@ def cmd_run(args: argparse.Namespace) -> int:
                 state = "ON" if raw_mode else "OFF"
                 print(green(f"  Raw mode: {state}"))
                 continue
+            elif cmd == "/debug":
+                verbose = not verbose
+                state = "ON" if verbose else "OFF"
+                print(green(f"  Debug mode: {state}"))
+                continue
+            elif cmd == "/test":
+                # Connectivity diagnostic — tries DNS, TCP, TLS, HTTP separately.
+                print(blue("  Running connectivity test..."))
+                import socket
+                import ssl
+                from urllib.parse import urlparse
+                parsed = urlparse(base_url)
+                host = parsed.hostname
+                port = parsed.port or (443 if parsed.scheme == "https" else 80)
+
+                # 1. DNS
+                try:
+                    addrs = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+                    print(green(f"  [1/4] DNS: {host} -> {addrs[0][4][0]}"))
+                except Exception as e:
+                    print(red(f"  [1/4] DNS FAILED: {e}"))
+                    continue
+
+                # 2. TCP connect
+                try:
+                    sock = socket.create_connection((host, port), timeout=10)
+                    print(green(f"  [2/4] TCP: connected to {host}:{port}"))
+                except Exception as e:
+                    print(red(f"  [2/4] TCP FAILED: {e}"))
+                    continue
+
+                # 3. TLS handshake
+                if parsed.scheme == "https":
+                    try:
+                        ctx = ssl.create_default_context()
+                        ssock = ctx.wrap_socket(sock, server_hostname=host)
+                        cert = ssock.getpeercert()
+                        issuer = dict(x[0] for x in cert.get("issuer", [()]))
+                        print(green(f"  [3/4] TLS: handshake OK (issuer: {issuer.get('organizationName', '?')})"))
+                        ssock.close()
+                    except Exception as e:
+                        print(red(f"  [3/4] TLS FAILED: {type(e).__name__}: {e}"))
+                        sock.close()
+                        continue
+                else:
+                    print(green(f"  [3/4] TLS: skipped (HTTP)"))
+                    sock.close()
+
+                # 4. HTTP request via curl_cffi
+                try:
+                    test_resp = cffi_requests.get(
+                        base_url.rstrip("/") + "/",
+                        impersonate="chrome",
+                        timeout=15,
+                    )
+                    print(green(f"  [4/4] HTTP: GET / -> {test_resp.status_code}"))
+                    if test_resp.status_code == 200:
+                        print(green("  All checks passed. The server is reachable."))
+                    else:
+                        print(yellow(f"  Server returned {test_resp.status_code}"))
+                except Exception as e:
+                    print(red(f"  [4/4] HTTP FAILED: {type(e).__name__}: {e}"))
+                continue
             else:
                 print(red(f"  Unknown command: {cmd}. Type /help for available commands."))
                 continue
@@ -200,7 +267,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         started = False
         error_occurred = False
 
-        for kind, value in stream_completion(messages, model, base_url, key, raw=raw_mode, site_password=site_password):
+        for kind, value in stream_completion(messages, model, base_url, key, raw=raw_mode, site_password=site_password, verbose=verbose):
             if kind == "token":
                 if not started:
                     started = True
@@ -259,6 +326,8 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--system", help="Initial system prompt.")
     r.add_argument("--model", help="Model name (default: gpt-4o-mini).")
     r.add_argument("--url", help="Server base URL (defaults to $AISEARCH_URL).")
+    r.add_argument("-v", "--verbose", action="store_true",
+                   help="Print debug info to stderr (request details, response status, errors).")
     r.set_defaults(func=cmd_run)
 
     k = sub.add_parser("keygen", help="Print a fresh shared key.")
