@@ -112,12 +112,13 @@ def stream_completion(
         # curl_cffi impersonates Chrome's TLS fingerprint (JA3/JA4),
         # HTTP/2 settings, and header order — defeating DPI that blocks
         # non-browser clients.
+        # Short connect timeout (15s) so we don't hang forever on blocked networks.
         resp = cffi_requests.get(
             url,
             params=params,
             headers=headers,
             impersonate="chrome",
-            timeout=120,
+            timeout=15,
             stream=True,
         )
         vlog(f"response: HTTP {resp.status_code}")
@@ -173,10 +174,26 @@ def stream_completion(
 
     except Exception as e:
         import traceback
-        vlog(f"exception type: {type(e).__name__}")
+        ename = type(e).__name__
+        vlog(f"exception type: {ename}")
         vlog(f"exception message: {e}")
         vlog(f"full traceback:\n{traceback.format_exc()}")
-        yield ("error", f"network: {type(e).__name__}: {e}")
+
+        # Give a helpful message for common DPI/blocking errors.
+        msg = str(e).lower()
+        if "timeout" in msg or "timed out" in msg:
+            yield ("error",
+                f"connection timed out — your network is likely blocking this domain.\n"
+                f"  Try: set AISEARCH_URL to a Cloudflare Worker proxy URL instead of onrender.com.\n"
+                f"  See worker/worker.js for the Cloudflare Worker proxy code.\n"
+                f"  Original error: {ename}: {e}")
+        elif "refused" in msg or "reset" in msg:
+            yield ("error",
+                f"connection refused/reset — your network is actively blocking the connection.\n"
+                f"  Try: set AISEARCH_URL to a Cloudflare Worker proxy URL.\n"
+                f"  Original error: {ename}: {e}")
+        else:
+            yield ("error", f"network: {ename}: {e}")
 
 
 def cmd_ask(args: argparse.Namespace) -> int:
